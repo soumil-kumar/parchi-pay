@@ -152,6 +152,14 @@ def get_sarvam_api_key() -> str:
 # ---------------------------------------------------------
 # Deterministic Python Settlement Engine
 # ---------------------------------------------------------
+def normalize_name(name: str) -> str:
+    """Normalize speaker names so 'I' or 'me' consistently maps to 'Me'."""
+    n = name.strip()
+    if n.lower() in ["i", "me", "myself", "main", "mera", "mere", "self"]:
+        return "Me"
+    return n
+
+
 def compute_net_settlements(parsed_expenses: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, float], Dict[str, float], Dict[str, float]]:
     """
     Computes mathematically rigorous, zero-sum net settlements deterministically.
@@ -162,21 +170,21 @@ def compute_net_settlements(parsed_expenses: List[Dict[str, Any]]) -> Tuple[List
     # 1. Determine all unique participants across all expenses
     participants = set()
     for exp in parsed_expenses:
-        payer = (exp.get("paid_by") or exp.get("payer") or "").strip()
+        payer = normalize_name(exp.get("paid_by") or exp.get("payer") or "")
         if payer:
             participants.add(payer)
         for p in exp.get("split_between", []):
             if isinstance(p, str) and p.strip():
-                participants.add(p.strip())
+                participants.add(normalize_name(p))
 
     # 2. For each person, calculate total_paid and total_owed
     total_paid = {p: 0.0 for p in participants}
     total_owed = {p: 0.0 for p in participants}
 
     for exp in parsed_expenses:
-        payer = (exp.get("paid_by") or exp.get("payer") or "").strip()
+        payer = normalize_name(exp.get("paid_by") or exp.get("payer") or "")
         amt = float(exp.get("amount", 0))
-        split_between = [p.strip() for p in exp.get("split_between", []) if isinstance(p, str) and p.strip()]
+        split_between = [normalize_name(p) for p in exp.get("split_between", []) if isinstance(p, str) and p.strip()]
         
         # If split_between is empty, assume split equally among all participants
         if not split_between:
@@ -212,7 +220,8 @@ def compute_net_settlements(parsed_expenses: List[Dict[str, Any]]) -> Tuple[List
         debt = round(debt, 2)
 
         if debt > 0.01:
-            debtor_target_vpa = (re.sub(r'[^a-zA-Z0-9]', '', creditor["person"].lower()) or "merchant") + "@upi"
+            clean_vpa = (re.sub(r'[^a-zA-Z0-9]', '', creditor["person"].lower()) or "merchant")
+            debtor_target_vpa = clean_vpa + "@upi"
             creditor_name = creditor["person"]
             upi_uri = 'upi://pay?pa=' + debtor_target_vpa + '&pn=' + creditor_name + '&am=' + f"{debt:.2f}" + '&tn=ParchiPay'
 
@@ -234,11 +243,15 @@ def compute_net_settlements(parsed_expenses: List[Dict[str, Any]]) -> Tuple[List
     return settlements, net_balances, total_paid, total_owed
 
 
-def generate_settlement_summaries(settlements: List[Dict[str, Any]]) -> Tuple[str, str]:
-    """Generate deterministic Hindi and English summaries directly from calculated settlements."""
+def generate_settlement_summaries(settlements: List[Dict[str, Any]], transcript: str = "", api_key: str = "") -> Tuple[str, str]:
+    """
+    Generate natural, grammatically correct Hindi and English summaries.
+    Uses Sarvam-105B for conversational fluidity with a robust grammatical Python fallback.
+    """
     if not settlements:
         return "सभी हिसाब बराबर हैं, किसी को कोई भुगतान नहीं करना है।", "All balances are settled. No payments required."
 
+    # 1. Deterministic grammatical Python baseline
     hi_parts = []
     en_parts = []
     for s in settlements:
@@ -246,12 +259,68 @@ def generate_settlement_summaries(settlements: List[Dict[str, Any]]) -> Tuple[st
         to_p = s["to_person"]
         amt = s["amount"]
         amt_str = f"{int(amt)}" if amt.is_integer() else f"{amt:.2f}"
-        hi_parts.append(f"{from_p}, {to_p} को ₹{amt_str} भेजेंगे")
-        en_parts.append(f"{from_p} pays {to_p} ₹{amt:.2f}")
 
-    summary_hindi = " और ".join(hi_parts) + "।"
-    summary_english = ", and ".join(en_parts) + "."
-    return summary_hindi, summary_english
+        is_from_me = from_p.lower() in ["me", "i", "myself", "main"]
+        is_to_me = to_p.lower() in ["me", "i", "myself", "main"]
+
+        if is_from_me:
+            en_parts.append(f"I pay {to_p} ₹{amt:.2f}")
+            hi_parts.append(f"मैं {to_p} को ₹{amt_str} दूंगा")
+        elif is_to_me:
+            en_parts.append(f"{from_p} pays me ₹{amt:.2f}")
+            hi_parts.append(f"{from_p} मुझे ₹{amt_str} देंगे")
+        else:
+            en_parts.append(f"{from_p} pays {to_p} ₹{amt:.2f}")
+            hi_parts.append(f"{from_p}, {to_p} को ₹{amt_str} देंगे")
+
+    fallback_hindi = " और ".join(hi_parts) + "।"
+    fallback_english = ", and ".join(en_parts) + "."
+
+    # 2. Contextual Sarvam-105B interpretation using the exact figures
+    if api_key and transcript:
+        settlement_lines = [f"- {s['from_person']} owes {s['to_person']} ₹{s['amount']:.2f}" for s in settlements]
+        prompt = (
+            f"Spoken expense context: \"{transcript}\"\n\n"
+            f"Exact calculated zero-sum settlements:\n" +
+            "\n".join(settlement_lines) +
+            "\n\nTask:\n"
+            "Write fluent, natural, grammatically correct settlement sentences in Hindi and English.\n"
+            "- If someone owes 'Me' or 'I', use 'मुझे' in Hindi and 'me' in English (e.g. 'Rahul pays me ₹350 and Amit pays me ₹200.').\n"
+            "- If 'Me' or 'I' owes someone, use 'मैं ... दूंगा' in Hindi and 'I pay ...' in English.\n"
+            "- Never say broken phrasing like 'pays I'.\n"
+            "- Do not change any numbers or who pays whom.\n"
+            "Return RAW JSON ONLY with keys 'summary_hindi' and 'summary_english'."
+        )
+        url = "https://api.sarvam.ai/v1/chat/completions"
+        headers = {"api-subscription-key": api_key, "Content-Type": "application/json"}
+        payload = {
+            "model": "sarvam-105b-conversations",
+            "messages": [
+                {"role": "system", "content": "You are Parchi-Pay. Write natural, grammatically correct settlement summaries in Hindi and English. Return RAW JSON ONLY."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1,
+            "max_tokens": 400
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            if resp.status_code == 200:
+                raw_c = resp.json()["choices"][0]["message"].get("content", "").strip()
+                if "```" in raw_c:
+                    raw_c = re.sub(r"^```(?:json)?\s*", "", raw_c, flags=re.MULTILINE)
+                    raw_c = re.sub(r"\s*```$", "", raw_c, flags=re.MULTILINE).strip()
+                m = re.search(r"\{.*\}", raw_c, re.DOTALL)
+                if m:
+                    data = json.loads(m.group(0))
+                    sh = data.get("summary_hindi", "").strip()
+                    se = data.get("summary_english", "").strip()
+                    # Verify no 'pays I' broken English
+                    if sh and se and "pays i" not in se.lower():
+                        return sh, se
+        except Exception:
+            pass
+
+    return fallback_hindi, fallback_english
 
 
 # ---------------------------------------------------------
@@ -430,9 +499,12 @@ def run_expense_extraction(transcript: str, api_key: str) -> List[Dict[str, Any]
 
     system_content = (
         "You are Parchi-Pay, an expert Indian expense-parsing assistant.\n"
-        "Your ONLY job is to extract the expense items from the transcribed speech.\n"
-        "Interpret Indian numerals accurately ('dedh sau'=150, 'dhai sau'=250, 'paune do sau'=175, 'paune char sau'=375, 'dedh hazaar'=1500, 'dhai hazaar'=2500, etc.).\n"
-        "Format as valid JSON with key 'parsed_expenses':\n"
+        "Your ONLY job is to extract all expense items from the transcribed speech.\n"
+        "Instructions:\n"
+        "1. Extract EVERY expense item mentioned, including phrasing like 'paid', 'covered', 'spent', 'bought', 'took care of', 'bhare', 'diye', 'lagaye'.\n"
+        "2. If the speaker refers to themselves as 'I', 'me', 'myself', or 'main', represent them as 'Me'.\n"
+        "3. Interpret Indian numerals accurately ('dedh sau'=150, 'dhai sau'=250, 'paune do sau'=175, 'paune char sau'=375, 'dedh hazaar'=1500, 'dhai hazaar'=2500, etc.).\n"
+        "4. Format as valid JSON with key 'parsed_expenses':\n"
         "{\n"
         '  "parsed_expenses": [\n'
         '    {"item": "chai", "amount": 150, "paid_by": "Rahul", "split_between": ["Rahul", "Priya"]}\n'
@@ -629,7 +701,7 @@ def main():
 
                 # Step 3: Pure Python deterministic debt minimization
                 settlements, net_balances, total_paid, total_owed = compute_net_settlements(parsed_expenses)
-                summary_hindi, summary_english = generate_settlement_summaries(settlements)
+                summary_hindi, summary_english = generate_settlement_summaries(settlements, transcript, api_key)
 
                 # Step 4: TTS confirmation on deterministic summary
                 tts_progress = st.empty()
