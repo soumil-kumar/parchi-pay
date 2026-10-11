@@ -25,20 +25,21 @@ st.markdown("""
     .title-banner {
         font-size: 2.3rem;
         font-weight: 800;
-        background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 50%, #059669 100%);
+        background: linear-gradient(135deg, #60A5FA 0%, #3B82F6 50%, #34D399 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         margin-bottom: 0.2rem;
     }
     .sub-banner {
         font-size: 1.05rem;
-        color: #4B5563;
+        color: var(--text-color);
+        opacity: 0.85;
         margin-bottom: 1.5rem;
     }
     .section-header {
         font-size: 1.35rem;
         font-weight: 700;
-        color: #0F172A;
+        color: var(--text-color) !important;
         display: flex;
         align-items: center;
         gap: 0.6rem;
@@ -46,58 +47,70 @@ st.markdown("""
         margin-bottom: 0.8rem;
     }
     .section-tag {
-        background-color: #EEF2FF;
-        color: #2563EB;
+        background-color: rgba(59, 130, 246, 0.18);
+        color: #60A5FA !important;
         font-size: 0.72rem;
         font-weight: 700;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         padding: 0.2rem 0.55rem;
         border-radius: 6px;
-        border: 1px solid #DBEAFE;
+        border: 1px solid rgba(96, 165, 250, 0.4);
     }
     .sub-section-title {
-        font-size: 1.05rem;
+        font-size: 1.15rem;
         font-weight: 700;
-        color: #1E293B;
-        margin-top: 1.4rem;
-        margin-bottom: 0.6rem;
-        padding-bottom: 0.3rem;
-        border-bottom: 2px solid #F1F5F9;
+        color: var(--text-color) !important;
+        margin-top: 1.5rem;
+        margin-bottom: 0.8rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 2px solid rgba(148, 163, 184, 0.25);
     }
     .settlement-card {
-        background: #F8FAFC;
-        border: 1px solid #E2E8F0;
+        background: var(--secondary-background-color);
+        border: 1px solid rgba(148, 163, 184, 0.25);
         border-radius: 12px;
         padding: 1.2rem;
         margin-bottom: 1rem;
         text-align: center;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    .card-title {
+        margin: 0;
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: #60A5FA !important;
+    }
+    .card-amount {
+        margin: 0.3rem 0;
+        font-size: 1.65rem;
+        font-weight: 800;
+        color: #34D399 !important;
     }
     .hindi-box {
-        background: #EFF6FF;
-        border-left: 5px solid #2563EB;
+        background: rgba(37, 99, 235, 0.12);
+        border-left: 5px solid #3B82F6;
         padding: 1rem 1.2rem;
         border-radius: 0 8px 8px 0;
         font-size: 1.15rem;
         font-weight: 600;
-        color: #1E293B;
+        color: var(--text-color) !important;
         margin: 0.8rem 0;
     }
     .english-box {
-        background: #F0FDF4;
+        background: rgba(16, 185, 129, 0.12);
         border-left: 5px solid #10B981;
         padding: 0.8rem 1.2rem;
         border-radius: 0 8px 8px 0;
         font-size: 1.0rem;
-        color: #065F46;
+        color: var(--text-color) !important;
         margin-bottom: 1rem;
     }
     .upi-btn {
         display: inline-block;
         background-color: #2563EB;
-        color: white !important;
-        padding: 0.5rem 1.2rem;
+        color: #FFFFFF !important;
+        padding: 0.55rem 1.2rem;
         border-radius: 8px;
         text-decoration: none !important;
         font-weight: 600;
@@ -729,8 +742,8 @@ def main():
                     
                     st.markdown(f"""
                     <div class='settlement-card'>
-                        <h4 style='margin:0; color:#1E3A8A;'>{from_p} pays {to_p}</h4>
-                        <h2 style='margin:0.2rem 0; color:#059669;'>₹{amt:,.2f}</h2>
+                        <div class='card-title'>{from_p} pays {to_p}</div>
+                        <div class='card-amount'>₹{amt:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                     
