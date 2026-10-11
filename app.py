@@ -3,13 +3,14 @@ import io
 import json
 import base64
 import re
+from typing import Dict, List, Any, Tuple
 import requests
 import streamlit as st
 import qrcode
 from PIL import Image
 
 # ---------------------------------------------------------
-# Streamlit Page Config & Custom Design
+# Streamlit Page Config & Theme
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Parchi-Pay | Voice-to-UPI Bill Settlement",
@@ -21,9 +22,9 @@ st.set_page_config(
 st.markdown("""
 <style>
     .title-banner {
-        font-size: 2.2rem;
+        font-size: 2.3rem;
         font-weight: 800;
-        background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 60%, #059669 100%);
+        background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 50%, #059669 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         margin-bottom: 0.2rem;
@@ -82,7 +83,7 @@ st.markdown("""
 # API Key Resolver
 # ---------------------------------------------------------
 def get_sarvam_api_key() -> str:
-    """Read API key from os.environ.get('SARVAM_API_KEY') with file fallback."""
+    """Read API key from os.environ.get('SARVAM_API_KEY') with local fallback."""
     key = os.environ.get("SARVAM_API_KEY", "").strip()
     if not key:
         if os.path.exists("api_key.txt"):
@@ -105,62 +106,108 @@ def get_sarvam_api_key() -> str:
 
 
 # ---------------------------------------------------------
-# Zero-Sum Net Settlement Helper (Algorithmic Guarantee)
+# Deterministic Python Settlement Engine
 # ---------------------------------------------------------
-def compute_zero_sum_settlements(expenses):
-    """Computes exact mathematical zero-sum balances and minimal transactions."""
-    balances = {}
-    for exp in expenses:
-        payer = exp.get("payer", "").strip()
+def compute_net_settlements(parsed_expenses: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, float], Dict[str, float], Dict[str, float]]:
+    """
+    Computes mathematically rigorous, zero-sum net settlements deterministically.
+    
+    Returns:
+        (settlements, net_balances, total_paid, total_owed)
+    """
+    # 1. Determine all unique participants across all expenses
+    participants = set()
+    for exp in parsed_expenses:
+        payer = (exp.get("paid_by") or exp.get("payer") or "").strip()
+        if payer:
+            participants.add(payer)
+        for p in exp.get("split_between", []):
+            if isinstance(p, str) and p.strip():
+                participants.add(p.strip())
+
+    # 2. For each person, calculate total_paid and total_owed
+    total_paid = {p: 0.0 for p in participants}
+    total_owed = {p: 0.0 for p in participants}
+
+    for exp in parsed_expenses:
+        payer = (exp.get("paid_by") or exp.get("payer") or "").strip()
         amt = float(exp.get("amount", 0))
-        split_between = exp.get("split_between", [])
+        split_between = [p.strip() for p in exp.get("split_between", []) if isinstance(p, str) and p.strip()]
+        
+        # If split_between is empty, assume split equally among all participants
         if not split_between:
-            split_between = [payer]
-        split_between = [p.strip() for p in split_between if p.strip()]
+            split_between = list(participants) if participants else ([payer] if payer else [])
         if not split_between:
             continue
-        per_person = amt / len(split_between)
-        balances[payer] = balances.get(payer, 0.0) + amt
+
+        if payer:
+            total_paid[payer] += amt
+
+        share_per_person = amt / len(split_between)
         for p in split_between:
-            balances[p] = balances.get(p, 0.0) - per_person
+            total_owed[p] += share_per_person
 
-    for k in balances:
-        balances[k] = round(balances[k], 2)
+    # 3. Compute net_balance = total_paid - total_owed
+    net_balances = {p: round(total_paid[p] - total_owed[p], 2) for p in participants}
 
-    debtors = []
-    creditors = []
-    for p, b in balances.items():
-        if b < -0.01:
-            debtors.append({"person": p, "amount": -b})
-        elif b > 0.01:
-            creditors.append({"person": p, "amount": b})
+    # 4. Separate participants into creditors (balance > 0.01) and debtors (balance < -0.01)
+    creditors = [{"person": p, "balance": net_balances[p]} for p in participants if net_balances[p] > 0.01]
+    debtors = [{"person": p, "balance": net_balances[p]} for p in participants if net_balances[p] < -0.01]
 
-    debtors.sort(key=lambda x: x["amount"], reverse=True)
-    creditors.sort(key=lambda x: x["amount"], reverse=True)
+    # Sort creditors descending and debtors ascending (most negative first)
+    creditors.sort(key=lambda x: x["balance"], reverse=True)
+    debtors.sort(key=lambda x: x["balance"])
 
+    # 5. Greedy debt minimization
     settlements = []
     i, j = 0, 0
     while i < len(debtors) and j < len(creditors):
         debtor = debtors[i]
         creditor = creditors[j]
-        settle_amt = min(debtor["amount"], creditor["amount"])
-        if settle_amt > 0.01:
-            clean_name = re.sub(r'[^a-zA-Z0-9]', '', creditor["person"].lower()) or "merchant"
-            settle_round = round(settle_amt, 2)
-            upi_uri = f"upi://pay?pa={clean_name}@upi&pn={creditor['person']}&am={settle_round}&tn=ParchiPay"
+        debt = min(-debtor["balance"], creditor["balance"])
+        debt = round(debt, 2)
+
+        if debt > 0.01:
+            debtor_target_vpa = (re.sub(r'[^a-zA-Z0-9]', '', creditor["person"].lower()) or "merchant") + "@upi"
+            creditor_name = creditor["person"]
+            upi_uri = 'upi://pay?pa=' + debtor_target_vpa + '&pn=' + creditor_name + '&am=' + f"{debt:.2f}" + '&tn=ParchiPay'
+
             settlements.append({
                 "from_person": debtor["person"],
-                "to_person": creditor["person"],
-                "amount": settle_round,
+                "to_person": creditor_name,
+                "amount": debt,
                 "upi_uri": upi_uri
             })
-        debtor["amount"] -= settle_amt
-        creditor["amount"] -= settle_amt
-        if debtor["amount"] <= 0.01:
+
+        debtor["balance"] += debt
+        creditor["balance"] -= debt
+
+        if abs(debtor["balance"]) <= 0.01:
             i += 1
-        if creditor["amount"] <= 0.01:
+        if abs(creditor["balance"]) <= 0.01:
             j += 1
-    return settlements, balances
+
+    return settlements, net_balances, total_paid, total_owed
+
+
+def generate_settlement_summaries(settlements: List[Dict[str, Any]]) -> Tuple[str, str]:
+    """Generate deterministic Hindi and English summaries directly from calculated settlements."""
+    if not settlements:
+        return "सभी हिसाब बराबर हैं, किसी को कोई भुगतान नहीं करना है।", "All balances are settled. No payments required."
+
+    hi_parts = []
+    en_parts = []
+    for s in settlements:
+        from_p = s["from_person"]
+        to_p = s["to_person"]
+        amt = s["amount"]
+        amt_str = f"{int(amt)}" if amt.is_integer() else f"{amt:.2f}"
+        hi_parts.append(f"{from_p}, {to_p} को ₹{amt_str} भेजेंगे")
+        en_parts.append(f"{from_p} pays {to_p} ₹{amt:.2f}")
+
+    summary_hindi = " और ".join(hi_parts) + "।"
+    summary_english = ", and ".join(en_parts) + "."
+    return summary_hindi, summary_english
 
 
 # ---------------------------------------------------------
@@ -203,11 +250,11 @@ def run_stt(audio_bytes: bytes, api_key: str) -> str:
     return response.json().get("transcript", "").strip()
 
 
-def run_chat_completion(transcript: str, api_key: str) -> dict:
+def run_expense_extraction(transcript: str, api_key: str) -> List[Dict[str, Any]]:
     """
     Chat Endpoint: POST https://api.sarvam.ai/v1/chat/completions
-    Model: sarvam-105b (with fallback to sarvam-105b-conversations)
-    Extracts expenses, calculates zero-sum net debts, returns RAW JSON ONLY.
+    Uses Sarvam-105B strictly to extract parsed expenses (item, amount, paid_by, split_between).
+    No arithmetic is offloaded to the LLM.
     """
     url = "https://api.sarvam.ai/v1/chat/completions"
     headers = {
@@ -216,10 +263,15 @@ def run_chat_completion(transcript: str, api_key: str) -> dict:
     }
 
     system_content = (
-        "You are Parchi-Pay. Extract expenses, calculate zero-sum net debts, and return RAW JSON ONLY with keys: "
-        "parsed_expenses (list of {item, amount, payer, split_between}), "
-        "net_settlements (with from_person, to_person, amount, upi_uri as upi://pay?pa=name@upi&pn=name&am=amount&tn=ParchiPay), "
-        "summary_hindi, summary_english."
+        "You are Parchi-Pay, an expert Indian expense-parsing assistant.\n"
+        "Your ONLY job is to extract the expense items from the transcribed speech.\n"
+        "Interpret Indian numerals accurately ('dedh sau'=150, 'dhai sau'=250, 'paune do sau'=175, 'paune char sau'=375, 'dedh hazaar'=1500, 'dhai hazaar'=2500, etc.).\n"
+        "Return RAW JSON ONLY with a single key 'parsed_expenses', which is a list of objects:\n"
+        "- 'item': string description of expense (e.g. 'chai', 'lunch', 'cab')\n"
+        "- 'amount': numeric value in INR\n"
+        "- 'paid_by': string name of the person who paid\n"
+        "- 'split_between': list of names of participants sharing this expense (if not specified, include all mentioned participants)\n"
+        "Do NOT perform any debt settlement calculations or arithmetic. Return RAW JSON ONLY."
     )
 
     models_to_try = ["sarvam-105b", "sarvam-105b-conversations"]
@@ -262,12 +314,20 @@ def run_chat_completion(transcript: str, api_key: str) -> dict:
         cleaned = cleaned.strip()
 
     try:
-        return json.loads(cleaned)
+        data = json.loads(cleaned)
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", cleaned, re.DOTALL)
         if match:
-            return json.loads(match.group(0))
-        raise RuntimeError(f"Failed to parse JSON from model output:\n{raw_response}")
+            data = json.loads(match.group(0))
+        else:
+            raise RuntimeError(f"Failed to parse JSON from model output:\n{raw_response}")
+
+    expenses = data.get("parsed_expenses", [])
+    # Normalize paid_by / payer
+    for exp in expenses:
+        if "payer" in exp and "paid_by" not in exp:
+            exp["paid_by"] = exp["payer"]
+    return expenses
 
 
 def run_tts(summary_hindi: str, api_key: str) -> bytes:
@@ -313,7 +373,7 @@ def run_tts(summary_hindi: str, api_key: str) -> bytes:
 # ---------------------------------------------------------
 def main():
     st.markdown("<div class='title-banner'>🧾 Parchi-Pay (पर्ची-पे)</div>", unsafe_allow_html=True)
-    st.markdown("<div class='sub-banner'>Voice-to-UPI Bill Settlement Tool powered by <b>Sarvam AI</b> (Saaras v4 • Sarvam-105B • Bulbul v3)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-banner'>Voice-to-UPI Bill Settlement Tool with Deterministic Python Settlement Engine & Sarvam AI</div>", unsafe_allow_html=True)
 
     # API Key Configuration
     api_key = get_sarvam_api_key()
@@ -334,9 +394,10 @@ def main():
 
         st.markdown("---")
         st.markdown("""
-        **Pipeline Specs:**
+        **Architecture & Execution:**
         - **STT:** `saaras:v4` (`mode='codemix'`)
-        - **LLM:** `sarvam-105b` (Zero-sum net debts)
+        - **LLM Extraction:** `sarvam-105b` (Indian numerals & items only)
+        - **Math Engine:** Pure Python deterministic zero-sum debt solver
         - **TTS:** `bulbul:v3` (`speaker='shubh'`, `hi-IN`)
         """)
 
@@ -387,7 +448,7 @@ def main():
             return
 
         # 3. Show progress spinner through STT -> Sarvam-105B -> TTS
-        with st.spinner("Processing expense through Sarvam AI Pipeline (Saaras v4 ➡️ Sarvam-105B ➡️ Bulbul v3)..."):
+        with st.spinner("Processing expense through Sarvam AI & Python Settlement Engine..."):
             try:
                 # Step 1: STT
                 stt_progress = st.empty()
@@ -399,31 +460,21 @@ def main():
                     st.error("No speech detected in audio clip. Please try speaking again.")
                     return
 
-                # Step 2: Sarvam-105B
+                # Step 2: Sarvam-105B expense extraction
                 llm_progress = st.empty()
-                llm_progress.info("🧠 Parsing numerals & calculating zero-sum debts via Sarvam-105B...")
-                parsed_data = run_chat_completion(transcript, api_key)
+                llm_progress.info("🧠 Parsing Indian numerals & extracting expenses via Sarvam-105B...")
+                parsed_expenses = run_expense_extraction(transcript, api_key)
                 llm_progress.empty()
 
-                parsed_expenses = parsed_data.get("parsed_expenses", [])
-                net_settlements = parsed_data.get("net_settlements", [])
-                summary_hindi = parsed_data.get("summary_hindi", "हिसाब पूरा हो गया है।")
-                summary_english = parsed_data.get("summary_english", "Bill settlement completed.")
+                if not parsed_expenses:
+                    st.warning("No expense items were recognized from the speech.")
+                    return
 
-                # Ensure zero-sum settlement accuracy
-                calc_settlements, balances = compute_zero_sum_settlements(parsed_expenses)
-                if not net_settlements:
-                    net_settlements = calc_settlements
-                else:
-                    # Validate UPI URIs
-                    for s in net_settlements:
-                        to_name = s.get("to_person", "recipient")
-                        clean = re.sub(r'[^a-zA-Z0-9]', '', to_name.lower()) or "merchant"
-                        amt = s.get("amount", 0)
-                        if "upi_uri" not in s or not s["upi_uri"]:
-                            s["upi_uri"] = f"upi://pay?pa={clean}@upi&pn={to_name}&am={amt}&tn=ParchiPay"
+                # Step 3: Pure Python deterministic debt minimization
+                settlements, net_balances, total_paid, total_owed = compute_net_settlements(parsed_expenses)
+                summary_hindi, summary_english = generate_settlement_summaries(settlements)
 
-                # Step 3: TTS
+                # Step 4: TTS confirmation on deterministic summary
                 tts_progress = st.empty()
                 tts_progress.info("🔊 Synthesizing Hindi confirmation voice via Bulbul v3...")
                 tts_audio_bytes = run_tts(summary_hindi, api_key)
@@ -432,13 +483,15 @@ def main():
                 st.session_state["result"] = {
                     "transcript": transcript,
                     "parsed_expenses": parsed_expenses,
-                    "net_settlements": net_settlements,
+                    "net_settlements": settlements,
+                    "net_balances": net_balances,
+                    "total_paid": total_paid,
+                    "total_owed": total_owed,
                     "summary_hindi": summary_hindi,
                     "summary_english": summary_english,
-                    "tts_audio_bytes": tts_audio_bytes,
-                    "balances": balances
+                    "tts_audio_bytes": tts_audio_bytes
                 }
-                st.success("🎉 Bill Settled Successfully!")
+                st.success("🎉 Bill Settled Deterministically with Exact Zero-Sum Math!")
 
             except Exception as e:
                 st.error(f"Pipeline error: {str(e)}")
@@ -462,7 +515,7 @@ def main():
         st.caption(f"📝 Transcribed Text (Saaras v4): *\"{res['transcript']}\"*")
 
         # Expense Breakdown Table
-        st.markdown("### 📋 Parsed Expenses")
+        st.markdown("### 📋 1. Parsed Expenses Breakdown")
         if res["parsed_expenses"]:
             exp_rows = []
             for e in res["parsed_expenses"]:
@@ -473,21 +526,38 @@ def main():
                 exp_rows.append({
                     "Item": e.get("item", "Expense"),
                     "Amount (₹)": f"₹{amt:,.2f}",
-                    "Paid By": e.get("payer", "-"),
+                    "Paid By": e.get("paid_by", "-"),
                     "Split Between": split_str,
                     "Per Person (₹)": f"₹{per_head:,.2f}"
                 })
             st.dataframe(exp_rows, use_container_width=True)
 
+        # Net Balances Summary Table
+        st.markdown("### ⚖️ 2. Participant Balances (Exact Mathematical Accounting)")
+        balance_rows = []
+        for person in res["net_balances"]:
+            t_paid = res["total_paid"].get(person, 0.0)
+            t_owed = res["total_owed"].get(person, 0.0)
+            net_b = res["net_balances"].get(person, 0.0)
+            status_label = "🟢 Creditor (Receives)" if net_b > 0.01 else ("🔴 Debtor (Pays)" if net_b < -0.01 else "⚪ Settled")
+            balance_rows.append({
+                "Participant": person,
+                "Total Paid (₹)": f"₹{t_paid:,.2f}",
+                "Fair Share Owed (₹)": f"₹{t_owed:,.2f}",
+                "Net Balance (₹)": f"₹{net_b:,.2f}",
+                "Status": status_label
+            })
+        st.dataframe(balance_rows, use_container_width=True)
+
         # 6. For each debt settlement, render an instant QR code using the python 'qrcode' library for the upi_uri, along with metric cards showing who owes whom.
-        st.markdown("### 💳 Net Debt Settlements & Instant UPI QR Codes")
+        st.markdown("### 💳 3. Net Debt Settlements & Instant UPI QR Codes")
         settlements = res["net_settlements"]
 
         if not settlements:
             st.success("🎉 All balances are settled! No debts owed.")
         else:
             # Metric cards showing who owes whom
-            st.markdown("#### 📊 Who Owes Whom")
+            st.markdown("#### 📊 Who Owes Whom (Minimized Pairwise Settlements)")
             metric_cols = st.columns(min(len(settlements), 4))
             for idx, s in enumerate(settlements):
                 m_col = metric_cols[idx % min(len(settlements), 4)]
@@ -501,7 +571,7 @@ def main():
                         help=f"{from_p} pays ₹{amt:,.2f} to {to_p}"
                     )
 
-            st.markdown("#### 📱 Instant UPI QR Codes")
+            st.markdown("#### 📱 Instant Scannable UPI QR Codes")
             qr_cols = st.columns(min(len(settlements), 3))
             for idx, s in enumerate(settlements):
                 q_col = qr_cols[idx % min(len(settlements), 3)]
@@ -509,7 +579,7 @@ def main():
                     from_p = s.get("from_person", "Debtor")
                     to_p = s.get("to_person", "Creditor")
                     amt = float(s.get("amount", 0))
-                    raw_upi = s.get("upi_uri", f"upi://pay?pa={to_p.lower()}@upi&pn={to_p}&am={amt}&tn=ParchiPay")
+                    raw_upi = s.get("upi_uri", f"upi://pay?pa={to_p.lower()}@upi&pn={to_p}&am={amt:.2f}&tn=ParchiPay")
 
                     qr_png = create_upi_qr(raw_upi)
                     
@@ -520,15 +590,18 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    st.image(qr_png, caption=f"Scan to pay {to_p}", use_container_width=True)
+                    st.image(qr_png, caption=f"Scan to pay {to_p} (₹{amt:,.2f})", use_container_width=True)
                     st.markdown(f"<div style='text-align:center;'><a href='{raw_upi}' class='upi-btn' target='_blank'>⚡ Pay ₹{amt:,.2f} via UPI</a></div>", unsafe_allow_html=True)
                     with st.expander("UPI Link Details"):
                         st.code(raw_upi, language="text")
 
-        # Raw JSON expander
-        with st.expander("🛠️ Raw JSON Response"):
+        # Developer Debug Expander
+        with st.expander("🛠️ Developer Inspector: Deterministic State"):
             st.json({
                 "parsed_expenses": res["parsed_expenses"],
+                "total_paid": res["total_paid"],
+                "total_owed": res["total_owed"],
+                "net_balances": res["net_balances"],
                 "net_settlements": res["net_settlements"],
                 "summary_hindi": res["summary_hindi"],
                 "summary_english": res["summary_english"]
