@@ -35,6 +35,36 @@ st.markdown("""
         color: #4B5563;
         margin-bottom: 1.5rem;
     }
+    .section-header {
+        font-size: 1.35rem;
+        font-weight: 700;
+        color: #0F172A;
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-top: 1.8rem;
+        margin-bottom: 0.8rem;
+    }
+    .section-tag {
+        background-color: #EEF2FF;
+        color: #2563EB;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 0.2rem 0.55rem;
+        border-radius: 6px;
+        border: 1px solid #DBEAFE;
+    }
+    .sub-section-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #1E293B;
+        margin-top: 1.4rem;
+        margin-bottom: 0.6rem;
+        padding-bottom: 0.3rem;
+        border-bottom: 2px solid #F1F5F9;
+    }
     .settlement-card {
         background: #F8FAFC;
         border: 1px solid #E2E8F0;
@@ -486,13 +516,13 @@ def run_tts(summary_hindi: str, api_key: str) -> bytes:
 # Streamlit Main App
 # ---------------------------------------------------------
 def main():
-    st.markdown("<div class='title-banner'>🧾 Parchi-Pay (पर्ची-पे)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='title-banner'>Parchi-Pay (पर्ची-पे)</div>", unsafe_allow_html=True)
     st.markdown("<div class='sub-banner'>Voice-to-UPI Bill Settlement Tool with Deterministic Python Settlement Engine & Sarvam AI</div>", unsafe_allow_html=True)
 
     # API Key Configuration
     api_key = get_sarvam_api_key()
     with st.sidebar:
-        st.markdown("### 🔑 Configuration")
+        st.markdown("### Configuration")
         user_key = st.text_input(
             "SARVAM_API_KEY",
             value=api_key,
@@ -504,7 +534,7 @@ def main():
             os.environ["SARVAM_API_KEY"] = api_key
             st.success("● API Key Connected")
         else:
-            st.error("⚠️ SARVAM_API_KEY missing")
+            st.error("SARVAM_API_KEY missing")
 
         st.markdown("---")
         st.markdown("""
@@ -523,24 +553,24 @@ def main():
         audio_clip = st.audio_input("Record expense breakdown")
 
     with col_preset:
-        st.markdown("**🎧 Or try sample audio:**")
+        st.markdown("**Or test with sample audio:**")
         sample_choice = st.selectbox(
             "Select pre-recorded clip:",
             [
                 "None",
-                "🍵 Chai & Samosa (dedh sau / dhai sau)",
-                "🍽️ Dinner & Cab (paune char sau / dedh hazaar)",
-                "🍿 Movie & Popcorn (paune do sau / saadhe teen sau)"
+                "Chai & Samosa (dedh sau / dhai sau)",
+                "Dinner & Cab (paune char sau / dedh hazaar)",
+                "Movie & Popcorn (paune do sau / saadhe teen sau)"
             ]
         )
         sample_audio_bytes = None
-        if sample_choice.startswith("🍵") and os.path.exists("samples/chai_samosa.wav"):
+        if sample_choice.startswith("Chai") and os.path.exists("samples/chai_samosa.wav"):
             with open("samples/chai_samosa.wav", "rb") as f:
                 sample_audio_bytes = f.read()
-        elif sample_choice.startswith("🍽️") and os.path.exists("samples/dinner_cab.wav"):
+        elif sample_choice.startswith("Dinner") and os.path.exists("samples/dinner_cab.wav"):
             with open("samples/dinner_cab.wav", "rb") as f:
                 sample_audio_bytes = f.read()
-        elif sample_choice.startswith("🍿") and os.path.exists("samples/popcorn_tickets.wav"):
+        elif sample_choice.startswith("Movie") and os.path.exists("samples/popcorn_tickets.wav"):
             with open("samples/popcorn_tickets.wav", "rb") as f:
                 sample_audio_bytes = f.read()
 
@@ -618,18 +648,18 @@ def main():
         st.markdown("---")
 
         # 5. Play the base64-decoded Bulbul audio response via st.audio()
-        st.markdown("### 🔊 Spoken Confirmation (Bulbul v3)")
+        st.markdown("<div class='section-header'><span class='section-tag'>Voice Note</span> Spoken Confirmation (Bulbul v3)</div>", unsafe_allow_html=True)
         audio_col, text_col = st.columns([1, 2])
         with audio_col:
             st.audio(res["tts_audio_bytes"], format="audio/wav")
         with text_col:
-            st.markdown(f"<div class='hindi-box'>💬 <b>Hindi:</b> {res['summary_hindi']}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='english-box'>🌐 <b>English:</b> {res['summary_english']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='hindi-box'><b>Hindi:</b> {res['summary_hindi']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='english-box'><b>English:</b> {res['summary_english']}</div>", unsafe_allow_html=True)
 
-        st.caption(f"📝 Transcribed Text (Saaras v4): *\"{res['transcript']}\"*")
+        st.caption(f"Transcribed Text (Saaras v4): *\"{res['transcript']}\"*")
 
         # Expense Breakdown Table
-        st.markdown("### 📋 1. Parsed Expenses Breakdown")
+        st.markdown("<div class='section-header'><span class='section-tag'>Step 1</span> Parsed Expenses Breakdown</div>", unsafe_allow_html=True)
         if res["parsed_expenses"]:
             exp_rows = []
             for e in res["parsed_expenses"]:
@@ -647,13 +677,13 @@ def main():
             st.dataframe(exp_rows, use_container_width=True)
 
         # Net Balances Summary Table
-        st.markdown("### ⚖️ 2. Participant Balances (Exact Mathematical Accounting)")
+        st.markdown("<div class='section-header'><span class='section-tag'>Step 2</span> Participant Balances (Zero-Sum Accounting)</div>", unsafe_allow_html=True)
         balance_rows = []
         for person in res["net_balances"]:
             t_paid = res["total_paid"].get(person, 0.0)
             t_owed = res["total_owed"].get(person, 0.0)
             net_b = res["net_balances"].get(person, 0.0)
-            status_label = "🟢 Creditor (Receives)" if net_b > 0.01 else ("🔴 Debtor (Pays)" if net_b < -0.01 else "⚪ Settled")
+            status_label = "Creditor (Receives)" if net_b > 0.01 else ("Debtor (Pays)" if net_b < -0.01 else "Settled")
             balance_rows.append({
                 "Participant": person,
                 "Total Paid (₹)": f"₹{t_paid:,.2f}",
@@ -664,14 +694,14 @@ def main():
         st.dataframe(balance_rows, use_container_width=True)
 
         # 6. For each debt settlement, render an instant QR code using the python 'qrcode' library for the upi_uri, along with metric cards showing who owes whom.
-        st.markdown("### 💳 3. Net Debt Settlements & Instant UPI QR Codes")
+        st.markdown("<div class='section-header'><span class='section-tag'>Step 3</span> Net Debt Settlements & Instant UPI QR Codes</div>", unsafe_allow_html=True)
         settlements = res["net_settlements"]
 
         if not settlements:
-            st.success("🎉 All balances are settled! No debts owed.")
+            st.success("All balances are settled! No debts owed.")
         else:
             # Metric cards showing who owes whom
-            st.markdown("#### 📊 Who Owes Whom (Minimized Pairwise Settlements)")
+            st.markdown("<div class='sub-section-title'>Who Owes Whom (Minimized Pairwise Settlements)</div>", unsafe_allow_html=True)
             metric_cols = st.columns(min(len(settlements), 4))
             for idx, s in enumerate(settlements):
                 m_col = metric_cols[idx % min(len(settlements), 4)]
@@ -685,7 +715,7 @@ def main():
                         help=f"{from_p} pays ₹{amt:,.2f} to {to_p}"
                     )
 
-            st.markdown("#### 📱 Instant Scannable UPI QR Codes")
+            st.markdown("<div class='sub-section-title'>Instant Scannable UPI QR Codes</div>", unsafe_allow_html=True)
             qr_cols = st.columns(min(len(settlements), 3))
             for idx, s in enumerate(settlements):
                 q_col = qr_cols[idx % min(len(settlements), 3)]
