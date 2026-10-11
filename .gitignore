@@ -1,0 +1,23 @@
+# Environment & Keys
+.env
+api_key.txt
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Streamlit
+.streamlit/credentials.toml
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
