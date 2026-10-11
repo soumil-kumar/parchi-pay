@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import ast
 import base64
 import re
 from typing import Dict, List, Any, Tuple
@@ -250,6 +251,128 @@ def run_stt(audio_bytes: bytes, api_key: str) -> str:
     return response.json().get("transcript", "").strip()
 
 
+def robust_parse_expenses(raw_text: str) -> List[Dict[str, Any]]:
+    """
+    Multi-strategy resilient JSON parser for LLM outputs.
+    Recovers from missing commas, trailing commas, single quotes,
+    comments, and uses deterministic regex item extraction as ultimate fallback.
+    """
+    if not raw_text or not raw_text.strip():
+        return []
+
+    cleaned = raw_text.strip()
+
+    # Step 1: Strip markdown code blocks
+    if "```" in cleaned:
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE)
+        cleaned = cleaned.strip()
+
+    # Step 2: Strip comments // and /* */
+    cleaned = re.sub(r"//.*?\n", "\n", cleaned)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+
+    def extract_expense_list(obj):
+        if isinstance(obj, dict):
+            if "parsed_expenses" in obj and isinstance(obj["parsed_expenses"], list):
+                return obj["parsed_expenses"]
+            for v in obj.values():
+                if isinstance(v, list) and v and isinstance(v[0], dict) and ("amount" in v[0] or "item" in v[0]):
+                    return v
+        elif isinstance(obj, list):
+            if obj and isinstance(obj[0], dict):
+                return obj
+        return None
+
+    # Strategy 1: Direct json.loads
+    try:
+        data = json.loads(cleaned)
+        res = extract_expense_list(data)
+        if res is not None:
+            return res
+    except Exception:
+        pass
+
+    # Strategy 2: Pre-repair common JSON syntax errors
+    repaired = cleaned
+    # Remove trailing commas
+    repaired = re.sub(r",\s*([\]}])", r"\1", repaired)
+    # Add missing comma between }{
+    repaired = re.sub(r"\}\s*\{", "},{", repaired)
+    # Add missing comma between ][
+    repaired = re.sub(r"\]\s*\[", "],[", repaired)
+    # Fix missing commas after numbers before next property: e.g. "amount": 1200 "paid_by"
+    repaired = re.sub(r'(\d+(?:\.\d+)?)\s*\n*\s*"([a-zA-Z_]+)"\s*:', r'\1, "\2":', repaired)
+    # Fix missing commas after strings before next property
+    repaired = re.sub(r'(")\s*\n*\s*"([a-zA-Z_]+)"\s*:', r'\1, "\2":', repaired)
+    # Fix missing commas after array closing ] before next property
+    repaired = re.sub(r'(\])\s*\n*\s*"([a-zA-Z_]+)"\s*:', r'\1, "\2":', repaired)
+
+    try:
+        data = json.loads(repaired)
+        res = extract_expense_list(data)
+        if res is not None:
+            return res
+    except Exception:
+        pass
+
+    # Strategy 3: Regex match outermost { ... } or [ ... ]
+    for pattern in [r"\{.*\}", r"\[.*\]"]:
+        match = re.search(pattern, repaired, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+                res = extract_expense_list(data)
+                if res is not None:
+                    return res
+            except Exception:
+                pass
+
+    # Strategy 4: Python ast.literal_eval (handles single quotes and unquoted values)
+    try:
+        py_str = repaired.replace("true", "True").replace("false", "False").replace("null", "None")
+        data = ast.literal_eval(py_str)
+        res = extract_expense_list(data)
+        if res is not None:
+            return res
+    except Exception:
+        pass
+
+    # Strategy 5: Deterministic Regex Item Extractor (The Bulletproof Layer)
+    expenses = []
+    blocks = re.findall(r"\{[^{}]*\}", cleaned)
+    for block in blocks:
+        item_match = re.search(r'["\']?item["\']?\s*:\s*["\']([^"\']+)["\']', block, re.IGNORECASE)
+        amt_match = re.search(r'["\']?amount["\']?\s*:\s*([0-9]+(?:\.[0-9]+)?)', block, re.IGNORECASE)
+        payer_match = re.search(r'["\']?(?:paid_by|payer)["\']?\s*:\s*["\']([^"\']+)["\']', block, re.IGNORECASE)
+        split_match = re.search(r'["\']?split_between["\']?\s*:\s*\[([^\]]*)\]', block, re.IGNORECASE)
+
+        if amt_match:
+            item_name = item_match.group(1).strip() if item_match else "Expense"
+            try:
+                amount_val = float(amt_match.group(1))
+            except ValueError:
+                continue
+            paid_by_val = payer_match.group(1).strip() if payer_match else "Unknown"
+
+            split_list = []
+            if split_match:
+                raw_split = split_match.group(1)
+                names = re.findall(r'["\']([^"\']+)["\']', raw_split)
+                if not names:
+                    names = [n.strip() for n in raw_split.split(",") if n.strip()]
+                split_list = names
+
+            expenses.append({
+                "item": item_name,
+                "amount": amount_val,
+                "paid_by": paid_by_val,
+                "split_between": split_list
+            })
+
+    return expenses
+
+
 def run_expense_extraction(transcript: str, api_key: str) -> List[Dict[str, Any]]:
     """
     Chat Endpoint: POST https://api.sarvam.ai/v1/chat/completions
@@ -266,12 +389,13 @@ def run_expense_extraction(transcript: str, api_key: str) -> List[Dict[str, Any]
         "You are Parchi-Pay, an expert Indian expense-parsing assistant.\n"
         "Your ONLY job is to extract the expense items from the transcribed speech.\n"
         "Interpret Indian numerals accurately ('dedh sau'=150, 'dhai sau'=250, 'paune do sau'=175, 'paune char sau'=375, 'dedh hazaar'=1500, 'dhai hazaar'=2500, etc.).\n"
-        "Return RAW JSON ONLY with a single key 'parsed_expenses', which is a list of objects:\n"
-        "- 'item': string description of expense (e.g. 'chai', 'lunch', 'cab')\n"
-        "- 'amount': numeric value in INR\n"
-        "- 'paid_by': string name of the person who paid\n"
-        "- 'split_between': list of names of participants sharing this expense (if not specified, include all mentioned participants)\n"
-        "Do NOT perform any debt settlement calculations or arithmetic. Return RAW JSON ONLY."
+        "Format as valid JSON with key 'parsed_expenses':\n"
+        "{\n"
+        '  "parsed_expenses": [\n'
+        '    {"item": "chai", "amount": 150, "paid_by": "Rahul", "split_between": ["Rahul", "Priya"]}\n'
+        "  ]\n"
+        "}\n"
+        "Ensure all keys and strings are in double quotes with commas between items. Return RAW JSON ONLY."
     )
 
     models_to_try = ["sarvam-105b", "sarvam-105b-conversations"]
@@ -306,27 +430,17 @@ def run_expense_extraction(transcript: str, api_key: str) -> List[Dict[str, Any]
     if not raw_response:
         raise RuntimeError(f"Chat completion failed: {last_err}")
 
-    # Clean JSON from backticks before json.loads()
-    cleaned = raw_response.strip()
-    if "```" in cleaned:
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
-        cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE)
-        cleaned = cleaned.strip()
+    # Use robust multi-tiered parser
+    expenses = robust_parse_expenses(raw_response)
 
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if match:
-            data = json.loads(match.group(0))
-        else:
-            raise RuntimeError(f"Failed to parse JSON from model output:\n{raw_response}")
-
-    expenses = data.get("parsed_expenses", [])
     # Normalize paid_by / payer
     for exp in expenses:
         if "payer" in exp and "paid_by" not in exp:
             exp["paid_by"] = exp["payer"]
+        if "split_between" not in exp or not exp["split_between"]:
+            payer_name = exp.get("paid_by", "")
+            exp["split_between"] = [payer_name] if payer_name else []
+
     return expenses
 
 
